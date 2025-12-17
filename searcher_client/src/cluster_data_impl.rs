@@ -1,29 +1,27 @@
+use crate::{ClusterData, Slot};
+use jito_protos::searcher::{
+    ConnectedLeadersRequest, ConnectedLeadersResponse,
+    searcher_service_client::SearcherServiceClient,
+};
+use log::error;
+use solana_sdk::pubkey::Pubkey;
 use std::{
     collections::{BTreeMap, HashMap},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
-
-use jito_protos::searcher::{
-    searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
-    ConnectedLeadersResponse,
-};
-use log::error;
-use solana_sdk::pubkey::Pubkey;
 use tokio::{
     sync::{
-        mpsc::{channel, Receiver},
         Mutex,
+        mpsc::{Receiver, channel},
     },
-    time::{interval, timeout, Interval},
+    time::{Interval, interval, timeout},
 };
 use tonic::codegen::{Body, Bytes, StdError};
-
-use crate::{ClusterData, Slot};
 
 /// Convenient types.
 type JitoLeaderScheduleCache = Arc<Mutex<BTreeMap<Slot, LeaderScheduleCacheEntry>>>;
@@ -32,7 +30,8 @@ struct LeaderScheduleCacheEntry {
     validator_identity: Arc<Pubkey>,
 }
 
-/// Main object keeping track of cluster data.
+/// Main object keeping track
+/// of cluster data.
 #[derive(Clone)]
 pub struct ClusterDataImpl {
     /// Tracks the current slot.
@@ -50,11 +49,11 @@ impl ClusterDataImpl {
         exit: Arc<AtomicBool>,
     ) -> Self
     where
-        T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static,
+        T: tonic::client::GrpcService<tonic::body::Body> + Send + 'static,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-        <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+        <T as tonic::client::GrpcService<tonic::body::Body>>::Future: std::marker::Send,
     {
         let current_slot = Arc::new(AtomicU64::new(0));
         let jito_leader_schedule_cache = Arc::new(Mutex::new(BTreeMap::new()));
@@ -112,11 +111,11 @@ impl ClusterDataImpl {
         mut fetch_interval: Interval,
         exit: Arc<AtomicBool>,
     ) where
-        T: tonic::client::GrpcService<tonic::body::BoxBody> + Send,
+        T: tonic::client::GrpcService<tonic::body::Body> + Send,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-        <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+        <T as tonic::client::GrpcService<tonic::body::Body>>::Future: std::marker::Send,
     {
         const MAX_RETRIES: usize = 5;
         while !exit.load(Ordering::Relaxed) {
@@ -167,11 +166,11 @@ impl ClusterDataImpl {
         max_retries: usize,
     ) -> Option<ConnectedLeadersResponse>
     where
-        T: tonic::client::GrpcService<tonic::body::BoxBody> + Send,
+        T: tonic::client::GrpcService<tonic::body::Body> + Send,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-        <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+        <T as tonic::client::GrpcService<tonic::body::Body>>::Future: std::marker::Send,
     {
         for _ in 0..max_retries {
             if let Ok(resp) = searcher_service_client
