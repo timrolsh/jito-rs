@@ -2,37 +2,34 @@ pub mod client_interceptor;
 pub mod cluster_data_impl;
 pub mod convert;
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-
-use bincode::serialize;
+use crate::convert::proto_packet_from_versioned_tx;
 use bytes::Bytes;
-use futures::{future::join_all, StreamExt};
+use futures::StreamExt;
 use jito_protos::{
     bundle::{Bundle, BundleResult},
     searcher::{
-        mempool_subscription, searcher_service_client::SearcherServiceClient, MempoolSubscription,
-        SendBundleRequest, SubscribeBundleResultsRequest, WriteLockedAccountSubscriptionV0,
+        SendBundleRequest, SubscribeBundleResultsRequest,
+        searcher_service_client::SearcherServiceClient,
     },
 };
 use log::*;
-use solana_client::nonblocking::tpu_client::TpuClient;
-use solana_sdk::{clock::Slot, pubkey::Pubkey, transaction::VersionedTransaction};
+use solana_sdk::transaction::VersionedTransaction;
+use solana_sdk::{clock::Slot, pubkey::Pubkey};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use thiserror::Error;
 use tokio::sync::{
-    mpsc::{channel, Receiver},
     Mutex,
+    mpsc::{Receiver, channel},
 };
 use tonic::{
+    Status,
     codegen::{Body, StdError},
     transport,
     transport::{Channel, Endpoint},
-    Status,
 };
-
-use crate::convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet};
 
 /// BundleId is expected to be a hash of the contained transaction signatures:
 /// fn derive_bundle_id(transactions: &[VersionedTransaction]) -> String {
@@ -80,7 +77,7 @@ pub struct SearcherClient<C: ClusterData, T> {
 
 impl<C: ClusterData + Clone, T> SearcherClient<C, T>
 where
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
+    T: tonic::client::GrpcService<tonic::body::Body>,
     T::Error: Into<StdError>,
     T::ResponseBody: Body<Data = Bytes> + Send + 'static,
     <T::ResponseBody as Body>::Error: Into<StdError> + Send,
@@ -97,26 +94,12 @@ where
         }
     }
 
-    /// Sends the list of transactions as a bundle iff the leader is a jito-solana.
+    /// Sends the list of transactions as a bundle to the Jito Block Engine.
     /// Returns the bundle's id.
     pub async fn send_bundle(
         &self,
         transactions: Vec<VersionedTransaction>,
-        // Defines how many slots to lookahead for a jito-solana validator in order to
-        // determine whether or not the bundle can be sent.
-        slot_lookahead: u64,
     ) -> SearcherClientResult<BundleId> {
-        let next_leader_slot = self
-            .cluster_data
-            .next_jito_validator()
-            .await
-            .ok_or(SearcherClientError::NoUpcomingJitoValidator)?
-            .1;
-
-        if next_leader_slot > slot_lookahead + self.cluster_data.current_slot().await {
-            return Err(SearcherClientError::NoUpcomingJitoValidator);
-        }
-
         let resp = self
             .searcher_service_client
             .lock()
@@ -133,86 +116,6 @@ where
             .await?;
 
         Ok(resp.into_inner().uuid)
-    }
-
-    /// Sends transactions through the normal pipeline, regardless of if the leader is running jito-solana.
-    /// Returns a list of results corresponding to the supplied transactions ordering.
-    pub async fn send_transactions(
-        &self,
-        tpu_client: &TpuClient,
-        transactions: Vec<VersionedTransaction>,
-    ) -> Vec<SearcherClientResult<()>> {
-        let futs = transactions
-            .into_iter()
-            .map(|tx| async move {
-                let serialized_tx = serialize(&tx)
-                    .map_err(|_e| SearcherClientError::TransactionSerializationError)?;
-                if !tpu_client.send_wire_transaction(serialized_tx).await {
-                    Err(SearcherClientError::TpuClientError)
-                } else {
-                    Ok(())
-                }
-            })
-            .collect::<Vec<_>>();
-
-        join_all(futs).await.into_iter().collect()
-    }
-
-    pub async fn subscribe_mempool_accounts(
-        &self,
-        accounts: &[Pubkey],
-        // Regions to subscribe to
-        regions: Vec<String>,
-        buffer_size: usize,
-    ) -> SearcherClientResult<Receiver<Vec<VersionedTransaction>>> {
-        let (sender, receiver) = channel(buffer_size);
-
-        let mut stream = self
-            .searcher_service_client
-            .lock()
-            .await
-            .subscribe_mempool(MempoolSubscription {
-                msg: Some(mempool_subscription::Msg::WlaV0Sub(
-                    WriteLockedAccountSubscriptionV0 {
-                        accounts: accounts.iter().map(|account| account.to_string()).collect(),
-                    },
-                )),
-                regions,
-            })
-            .await?
-            .into_inner();
-
-        let exit = self.exit.clone();
-        tokio::spawn(async move {
-            while !exit.load(Ordering::Relaxed) {
-                let msg = match stream.next().await {
-                    None => {
-                        error!("mempool stream closed");
-                        return;
-                    }
-                    Some(res) => {
-                        if let Err(e) = res {
-                            error!("mempool stream received error status: {e}");
-                            return;
-                        }
-                        res.unwrap()
-                    }
-                };
-
-                let transactions = msg
-                    .transactions
-                    .iter()
-                    .filter_map(versioned_tx_from_packet)
-                    .collect();
-
-                if let Err(e) = sender.send(transactions).await {
-                    error!("error sending transactions: {e}");
-                    return;
-                }
-            }
-        });
-
-        Ok(receiver)
     }
 
     pub async fn subscribe_bundle_results(
@@ -261,7 +164,7 @@ pub async fn grpc_connect(url: &str) -> SearcherClientResult<Channel> {
     let endpoint = if url.contains("https") {
         Endpoint::from_shared(url.to_string())
             .expect("invalid url")
-            .tls_config(transport::ClientTlsConfig::new())
+            .tls_config(transport::ClientTlsConfig::new().with_native_roots())
     } else {
         Endpoint::from_shared(url.to_string())
     }?;
