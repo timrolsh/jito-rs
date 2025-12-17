@@ -2,7 +2,7 @@ use tonic_build::configure;
 
 fn main() {
     configure()
-        .compile(
+        .compile_protos(
             &[
                 "mev-protos/auth.proto",
                 "mev-protos/block.proto",
@@ -13,7 +13,6 @@ fn main() {
                 "mev-protos/searcher.proto",
                 "mev-protos/shared.proto",
                 "mev-protos/shredstream.proto",
-                "mev-protos/trace_shred.proto",
             ],
             &["mev-protos"],
         )
