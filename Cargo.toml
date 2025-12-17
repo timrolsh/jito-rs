@@ -1,6 +1,2 @@
 [workspace]
-members = [
-    "examples/*",
-    "protos",
-    "searcher_client",
-]
+members = ["protos", "searcher_client"]
