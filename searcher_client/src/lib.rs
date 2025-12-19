@@ -2,33 +2,39 @@ pub mod client_interceptor;
 pub mod cluster_data_impl;
 pub mod convert;
 
+use crate::client_interceptor::ClientInterceptor;
+use crate::cluster_data_impl::ClusterDataImpl;
 use crate::convert::proto_packet_from_versioned_tx;
+use solana_sdk::signature::Keypair;
+
 use bytes::Bytes;
 use futures::StreamExt;
 use jito_protos::{
+    auth::auth_service_client::AuthServiceClient,
     bundle::{Bundle, BundleResult},
     searcher::{
-        SendBundleRequest, SubscribeBundleResultsRequest,
-        searcher_service_client::SearcherServiceClient,
+        searcher_service_client::SearcherServiceClient, SendBundleRequest,
+        SubscribeBundleResultsRequest,
     },
 };
 use log::*;
 use solana_sdk::transaction::VersionedTransaction;
 use solana_sdk::{clock::Slot, pubkey::Pubkey};
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
 use thiserror::Error;
 use tokio::sync::{
+    mpsc::{channel, Receiver},
     Mutex,
-    mpsc::{Receiver, channel},
 };
 use tonic::{
-    Status,
     codegen::{Body, StdError},
+    service::interceptor::InterceptedService,
     transport,
     transport::{Channel, Endpoint},
+    Status,
 };
 
 /// BundleId is expected to be a hash of the contained transaction signatures:
@@ -170,6 +176,66 @@ pub async fn grpc_connect(url: &str) -> SearcherClientResult<Channel> {
     }?;
 
     Ok(endpoint.connect().await?)
+}
+
+/// Get a searcher client with authentication.
+pub async fn get_searcher_client_auth(
+    jito_auth_keypair: &Arc<Keypair>,
+    exit: &Arc<AtomicBool>,
+    block_engine_url: &str,
+    json_rpc_url: &str,
+) -> SearcherClientResult<(
+    SearcherClient<ClusterDataImpl, InterceptedService<Channel, ClientInterceptor>>,
+    ClusterDataImpl,
+)> {
+    let auth_channel = grpc_connect(block_engine_url).await?;
+    let client_interceptor =
+        ClientInterceptor::new(AuthServiceClient::new(auth_channel), jito_auth_keypair).await?;
+
+    let searcher_channel = grpc_connect(block_engine_url).await?;
+    let searcher_service_client =
+        SearcherServiceClient::with_interceptor(searcher_channel, client_interceptor);
+
+    let cluster_data_impl = ClusterDataImpl::new(
+        json_rpc_url.to_string(),
+        searcher_service_client.clone(),
+        exit.clone(),
+    )
+    .await;
+
+    Ok((
+        SearcherClient::new(
+            cluster_data_impl.clone(),
+            searcher_service_client,
+            exit.clone(),
+        ),
+        cluster_data_impl,
+    ))
+}
+
+pub async fn get_searcher_client_no_auth(
+    exit: &Arc<AtomicBool>,
+    block_engine_url: &str,
+    json_rpc_url: &str,
+) -> SearcherClientResult<(SearcherClient<ClusterDataImpl, Channel>, ClusterDataImpl)> {
+    let searcher_channel = grpc_connect(block_engine_url).await?;
+    let searcher_service_client = SearcherServiceClient::new(searcher_channel);
+
+    let cluster_data_impl = ClusterDataImpl::new(
+        json_rpc_url.to_string(),
+        searcher_service_client.clone(),
+        exit.clone(),
+    )
+    .await;
+
+    Ok((
+        SearcherClient::new(
+            cluster_data_impl.clone(),
+            searcher_service_client,
+            exit.clone(),
+        ),
+        cluster_data_impl,
+    ))
 }
 
 pub mod utils {
