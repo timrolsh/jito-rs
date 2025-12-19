@@ -14,6 +14,7 @@ log = "0.4.27"
 prost-types = "0.13"
 solana-client = "3.0.10"
 solana-metrics = "3.0.10"
+solana-perf = "3.1.4"
 solana-sdk = "3.0.0"
 thiserror = "2.0.12"
 tokio = { version = "1.14.1", features = ["full"] }
