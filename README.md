@@ -34,4 +34,15 @@ let (searcher_client, cluster_data_impl) = get_searcher_client_no_auth(
     block_engine_url,
     json_rpc_url,
 ).await?;
+
+// Send a bundle and receive its bundle id. transaction is a VersionedTransaction.
+use solana_sdk::transaction::VersionedTransaction;
+let bundle_id = searcher_client.send_bundle(vec![transaction]).await.unwrap();
+println!("{:?}", response);
+
+// Subscribe to bundle results
+let receiver = searcher_client.subscribe_bundle_results(100).await.unwrap();
+while let Some(result) = receiver.recv().await {
+    println!("{:?}", result);
+}
 ```
